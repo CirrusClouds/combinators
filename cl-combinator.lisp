@@ -2,139 +2,87 @@
 
 (in-package #:cl-combinator)
 
+(defun state-p (x)
+  (or (equal x 'Success)
+      (equal x 'Failure)))
+
+(deftype state ()
+  '(and symbol
+    (satisfies state-p)))
+
 (defstruct result
-  (state t)
-  (value nil)
-  remaining)
+  (state 'Failure :type state)
+  (result '() :type list)
+  (remaining '() :type list))
 
-(defclass Parser ()
-  ((parseFn
-    :initarg :parseFn
-    :accessor :parseFn)))
-
-
-(defmethod run ((obj Parser) (str string))
-  (funcall (slot-value obj 'parseFn) (make-result :remaining (coerce str 'list))))
-
-
-;; Parse functions
+(defun read-in ()
+  (make-result :remaining (coerce (read-line) 'list)))
 
 (defun pchar (char)
-  "Takes result struct, returns result struct. Builds up value"
-  (lambda (ctx)
-    (cond ((null (result-remaining ctx))
-           (make-result :state nil
-                        :value (result-value ctx)
-                        :remaining (result-remaining ctx)))
-          ((string= (car (result-remaining ctx)) char)
-           (make-result :state t
-                        :value (append (result-value ctx) (cons char nil))
-                        :remaining (cdr (result-remaining ctx))))
+  "Parse a single character"
+  (let ((char (coerce char 'character)))
+    (lambda (input)
+      (if (equal char (car (result-remaining input))) 
+          (make-result :state 'Success
+                       :result (append (result-result input) (list char))
+                       :remaining (cdr (result-remaining input)))
+          (make-result :state 'Failure :result (result-result input) :remaining (result-remaining input))
+          ))))
+
+(defun listparse (parsers)
+  "Parse multiple in a row and concatenate"
+  (lambda (input)
+    (cond ((null parsers)
+           input)
           (t
-           (make-result :state nil
-                        :value (result-value ctx)
-                        :remaining (result-remaining ctx))))))
-
-(defun andparse (parser1 parser2)
-  (lambda (ctx)
-    (setf result1 (funcall parser1 ctx))
-    (if (result-state result1)
-        (funcall parser2 result1)
-        result1)))
-
-(defun multiparse (parsers)
-  (lambda (ctx)
-    (setf *result*
-          (reduce (lambda (cur func2)
-                    (if (result-state cur)
-                        (funcall func2 cur)
-                        cur))
-                  parsers
-                  :initial-value ctx))))
-
-(defun wparse (charlist)
-  (mapcar (lambda (c)
-            (pchar c))
-          charlist))
-
-(defun succeeds (parser)
-  (lambda (ctx)
-    (setf *cur* (funcall parser ctx))
-    (if (and (null (result-remaining *cur*))
-             (result-state *cur*))
-        t
-        nil)
-    ))
-
-(defun parsemany (parser)
-  (lambda (ctx)
-    (setf *cur* (funcall parser ctx))
-    (if (result-state *cur*)
-        (funcall (parsemany parser) *cur*)
-        ctx)))
+           (let ((output (funcall (car parsers) input)))
+             (if (equal (result-state output) 'Success)
+                 (funcall (listparse (cdr parsers)) output)
+                 output))))))
 
 (defun parsechoice (parsers)
-  (lambda (ctx)
-    (funcall (reduce (lambda (func1 func2)
-                (if (result-state (funcall func1 ctx))
-                    func1
-                    func2))
-              parsers) ctx)
-    ))
+  "Parse one of"
+  (lambda (input)
+    (cond ((null parsers)
+           input)
+          (t
+           (let ((output (funcall (car parsers) input)))
+             (if (equal (result-state output) 'Success)
+                 output
+                 (funcall (parsechoice (cdr parsers)) output)))))))
 
-(defun stringparser (_string)
-  (lambda (ctx)
-    (setf *liststring* (coerce _string 'list))
-    (setf *parsexs* (wparse *liststring*))
-    (funcall (multiparse *parsexs*) ctx)
-    ))
-
-(defun manydigitparser ()
-  (lambda (ctx)
-    (funcall (parsechoice (wparse (list "0" "1" "2" "3" "4" "5" "6" "7" "8" "9"))) ctx)))
-
-
-
-(defun wordparser ()
-  (lambda (ctx)
-    (setf *result* (funcall (parsechoice (wparse (list "a" "b" "c" "d" "e" "f" "g" "h" "i" "j" "k" "l" "m" "n" "o" "p" "q" "r" "s" "t" "u" "v" "w" "x" "y" "z"))) ctx))
-    (if (result-state *result*)
-        (funcall (wordparser) *result*)
-        *result*)))
-
+(defun manyparse (parser)
+  "Parse the same repeatedly as many times as possible"
+  (lambda (input)
+    (let ((output (funcall parser input)))
+      (if (equal (result-state output) 'Success)
+          (funcall (manyparse parser) output)
+          input))))
 
 (defun seqparse (parsers)
-  (lambda (ctx)
-    (setf *cur* ctx)
-    (setf results '())
-    (loop :for parser :in parsers
-          :do
-             (progn
-               (setf *res* (funcall parser (make-result :remaining (result-remaining *cur*))))
-               (setf results (append results (list (result-value *res*))))
-               (setf *cur* *res*)))
-    (make-result :value results :remaining (result-remaining *cur*))))
+  "Return a list of results for each parse instead of concatenating"
+  (lambda (input)
+    (let ((acc '()))
+      (reduce (lambda (in p2)
+                (let ((output (funcall p2 in)))
+                  (setf acc (append acc (list output)))
+                  (make-result :state 'Failure :remaining (result-remaining output))))
+              parsers :initial-value input)
+      acc)))
 
-(defun hellothereparser ()
-  (lambda (ctx)
-    (funcall (seqparse (list (stringparser "hello")
-                             (pchar " ")
-                             (stringparser "three")))
-             ctx)))
+(setf *char-parser* (parsechoice (list (pchar "a") (pchar "b") (pchar "c") (pchar "d") (pchar "e") (pchar "f") (pchar "g") (pchar "h") (pchar "i") (pchar "j") (pchar "k") (pchar "l") (pchar "m") (pchar "n") (pchar "o") (pchar "p") (pchar "q") (pchar "r") (pchar "s") (pchar "t") (pchar "u") (pchar "v") (pchar "w") (pchar "x") (pchar "y") (pchar "z"))))
 
-(defun parenparser ()
-  (lambda (ctx)
-    (funcall (seqparse (list (stringparser "(")
-                             (wordparser)
-                             (stringparser ")"))) ctx)))
+(setf *digit-parser* (parsechoice (list (pchar "0") (pchar "1") (pchar "2") (pchar "3") (pchar "4") (pchar "5") (pchar "6") (pchar "7") (pchar "8") (pchar "9"))))
 
+(setf *word-parser* (manyparse *char-parser*))
 
+(setf *op-parser* (parsechoice (list (pchar "+") (pchar "-") (pchar "*") (pchar "/"))))
 
-;; Running and reading
-(defun read-into-parser ()
-  (setf *input* (coerce (read-line) 'list))
-  (setf *ctx* (make-result :remaining *input*))
-  *ctx*)
-
-(defun run-parser (parser)
-  (funcall parser (read-into-parser)))
+(setf *expr-parser* (seqparse (list
+                               (pchar "(")
+                               *op-parser*
+                               (pchar " ")
+                               *digit-parser*
+                               (pchar " ")
+                               *digit-parser*
+                               (pchar ")"))))
