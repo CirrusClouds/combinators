@@ -2,6 +2,8 @@
 
 (in-package #:cl-combinator)
 
+;;;  Types and structs
+
 (defun state-p (x)
   (or (equal x 'Success)
       (equal x 'Failure)))
