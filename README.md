@@ -1,9 +1,4 @@
 # cl-combinator
-### _Your Name <your.name@example.com>_
+### Just another p-combinator library
 
-This is a project to do ... something.
-
-## License
-
-Specify license here
-
+running a program: (funcall (program) (read-in (read-file <filename>)) from your repl.
