@@ -17,16 +17,6 @@
   (make-state (f:convert 'f:seq (coerce str 'list))))
 
 
-(defun read-file (infile)
-  (with-open-file (instream infile :direction :input :if-does-not-exist nil)
-    (when instream 
-      (let ((string (make-string (file-length instream))))
-        (read-sequence string instream)
-        string))))
-
-
-
-
 (defmacro with-state (binding &rest body)
   "Curry + check for errors on your state automatically"
   `(lambda (,binding)
@@ -47,6 +37,11 @@
          ,binding
          (let ((,binding (add-label ,binding ,label)))
            ,@body))))
+
+
+;;
+;; Parsers
+;;
 
 
 (defun char (ch)
@@ -93,10 +88,10 @@
 
 (defun choice (parsers)
   (with-state state
-    (if (f:convert 'list parsers)
+    (if (seq-to-list parsers)
         (let ((new-state (funcall (f:first parsers) state)))
           (if (equalp (f:@ new-state :state) 'FAILURE)
-              (if (f:convert 'list (f:less-first parsers))
+              (if (seq-to-list (f:less-first parsers))
                   (funcall (choice (f:less-first parsers)) state)
                   new-state)
               new-state))
@@ -119,7 +114,7 @@
 (defun null (parser)
   (with-state state
     (let ((new-state (funcall parser (make-state (f:@ state :remaining) (f:@ state :labels) (f:@ state :position) (f:@ state :line)))))
-      (if (f:convert 'list (f:@ new-state :errors))
+      (if (seq-to-list (f:@ new-state :errors))
           new-state
           (f:map-union state (f:map
                               (:state (f:@ new-state :state))
@@ -158,7 +153,7 @@
   (with-state state
     (let ((new-state (funcall parser state)))
       (if (equalp (f:@ new-state :state) 'FAILURE)
-          (if (f:convert 'list (f:@ new-state :remaining))
+          (if (seq-to-list (f:@ new-state :remaining))
               new-state
               state)
           (funcall (until-consumed parser) new-state)))))
@@ -228,21 +223,27 @@
   "A function is either some word, or a defined operation"
   (with-state-and-label state "function"
     (funcall (choice (f:seq (operation)
-                            (word)))
+                            (word)
+                            (s-expr)))
              state)))
 
+
+(defun s-expr ()
+  (with-state state
+    (funcall (many (f:seq
+                    (null (char #\( ))
+                    (block (function))
+                    (0+ (ws))
+                    (0+ (block (expression)))
+                    (null (char #\) ))
+                    (0+ (ws))))
+             state)))
 
 (defun expression ()
   "Expression is either a value or a a function with arguments that are expressions"
   (with-state state
     (funcall (choice (f:seq
-                      (many (f:seq
-                             (null (char #\( ))
-                             (block (function))
-                             (0+ (ws))
-                             (0+ (block (expression)))
-                             (null (char #\) ))
-                             (0+ (ws))))
+                      (s-expr)
                       (many (f:seq (value)
                                    (0+ (ws))))))
              state)))
@@ -263,12 +264,54 @@
   (funcall (program) (read-in s)))
 
 
-(defun build-expr (expression)
-  (f:map (:function (f:first expression))
+;;
+;; Compilation
+;; 
+
+
+(defun build-func (function)
+  (if (typep (f:first function) 'fset:seq)
+      (build-sexpr function)
+      (seq-to-string function)))
+
+
+(defun build-arg (arg)
+  (let ((arg-as-set (f:convert 'f:set arg)))
+    (cond
+      ((seq-to-list (f:intersection (f:set #\.)
+                                    arg-as-set))
+       (f:map (:type 'FLOAT)
+              (:value (seq-to-string arg))))
+      ((seq-to-list (f:intersection (f:set #\0 #\1 #\2 #\3 #\4 #\5 #\6
+                                           #\7 #\8 #\9)
+                                    arg-as-set))
+       (f:map (:type 'INT)
+              (:value (seq-to-string arg))))
+      ((seq-to-list (f:intersection (f:set #\a #\b #\c #\d #\e #\f #\g #\h #\i
+                                           #\j #\k #\l #\m #\n #\o #\p #\q #\r
+                                           #\s #\t #\u #\v #\w #\x #\y #\z)
+                                    arg-as-set))
+       (f:map (:type 'VAR)
+              (:value (seq-to-string arg))))
+      (t
+       (f:map (:type 'N/A)
+              (:value (seq-to-string arg)))))))
+
+
+(defun build-sexpr (expression)
+  (f:map (:function (build-func (f:first expression)))
          (:args (f:image (lambda (arg)
                            (if (typep (f:first arg) 'fset:seq)
-                               (build-expr arg) arg))
+                               (build-sexpr arg)
+                               (build-arg arg)))
                          (f:less-first expression)))))
+
+
+(defun build-expr (expression)
+  (if (typep (f:first expression) 'f:seq)
+      (build-sexpr expression)
+      (build-arg expression)))
+
 
 (defun build (parsed-program)
   (if (equalp (f:@ parsed-program :state) 'FAILURE)
@@ -276,5 +319,5 @@
               (f:first (f:@ parsed-program :errors))
               (f:@ parsed-program :line)
               (f:@ parsed-program :position)
-              (f:convert 'list (f:@ parsed-program :labels)))
+              (seq-to-list (f:@ parsed-program :labels)))
       (f:image #'build-expr (f:@ parsed-program :result))))
