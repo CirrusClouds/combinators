@@ -2,14 +2,14 @@
 
 (in-package #:cl-combinator)
 
-(defun make-state (remaining &optional (labels (f:empty-seq)))
+(defun make-state (remaining &optional (labels (f:empty-seq)) (position 0) (line 1))
   (f:map
    (:state 'SUCCESS)
    (:errors (f:empty-seq))
    (:result (f:empty-seq))
    (:remaining remaining)
-   (:position 0)
-   (:line 0)
+   (:position position)
+   (:line line)
    (:labels labels)))
 
 
@@ -36,7 +36,8 @@
 
 
 (defun add-label (state label)
-  (f:map-union state (f:map (:labels (f:with-last (f:@ state :labels) label)))))
+  (f:map-union state (f:map (:labels (f:with-last (f:@ state :labels)
+                                       (concatenate 'string label " LINE: " (write-to-string (f:@ state :line)) " POSITION: " (write-to-string (f:@ state :position))))))))
 
 
 (defmacro with-state-and-label (binding label &rest body)
@@ -66,13 +67,16 @@
                                    (:position (+ 1 (f:@ state :position)))
                                    (:result (f:with-last (f:@ state :result) ch))))
                ))
-          (f:map-union state (f:map
-                              (:state 'FAILURE)
-                              (:position (+ 1 (f:@ state :position)))
-                              (:errors (f:with-last (f:@ state :errors) (format nil "Expected character ~c, instead found ~c~%position: ~s~%traceback: ~%~s" ch (f:first (f:@ state :remaining))
-                                                                                (f:@ state :position)
-                                                                                (loop :for i :in (f:convert 'list (f:reverse (f:subseq (f:reverse (f:@ state :labels)) 0 7)))
-                                                                                      :collect (format nil "~d, ~%" i))))))))
+          (if (char= (f:first (f:@ state :remaining)) #\linefeed)
+              (f:map-union state (f:map
+                                  (:state 'FAILURE)
+                                  (:position 0)
+                                  (:line (+ 1 (f:@ state :line)))
+                                  (:errors (f:with-last (f:@ state :errors) (format nil "Expected character ~c, instead found ~c" ch (f:first (f:@ state :remaining)))))))
+              (f:map-union state (f:map
+                                  (:state 'FAILURE)
+                                  (:position (+ 1 (f:@ state :position)))
+                                  (:errors (f:with-last (f:@ state :errors) (format nil "Expected character ~c, instead found ~c" ch (f:first (f:@ state :remaining)))))))))
         (f:map-union state (f:map
                             (:state 'FAILURE)
                             (:position (+ 1 (f:@ state :position)))
@@ -101,12 +105,12 @@
 
 (defun block (parser)
   (with-state state
-    (let ((n-block (funcall parser (make-state (f:@ state :remaining) (f:@ state :labels)))))
+    (let ((n-block (funcall parser (make-state (f:@ state :remaining) (f:@ state :labels) (f:@ state :position) (f:@ state :line)))))
       (f:map-union state (f:map
                           (:state (f:@ n-block :state))
                           (:labels (f:@ n-block :labels))
-                          (:position (+ (f:@ state :position)
-                                        (f:@ n-block :position)))
+                          (:position (f:@ n-block :position))
+                          (:line (f:@ n-block :line))
                           (:result (f:with-last (f:@ state :result) (f:@ n-block :result)))
                           (:remaining (f:@ n-block :remaining))
                           (:errors (f:@ n-block :errors)))))))
@@ -114,13 +118,13 @@
 
 (defun null (parser)
   (with-state state
-    (let ((new-state (funcall parser (make-state (f:@ state :remaining) (f:@ state :labels)))))
+    (let ((new-state (funcall parser (make-state (f:@ state :remaining) (f:@ state :labels) (f:@ state :position) (f:@ state :line)))))
       (if (f:convert 'list (f:@ new-state :errors))
           new-state
           (f:map-union state (f:map
                               (:state (f:@ new-state :state))
-                              (:position (+ (f:@ state :position)
-                                            (f:@ new-state :position)))
+                              (:position (f:@ new-state :position))
+                              (:line (f:@ new-state :line))
                               (:result (f:@ state :result))
                               (:remaining (f:@ new-state :remaining))
                               (:errors (f:@ new-state :errors))))))))
@@ -148,6 +152,16 @@
       (if (equalp (f:@ new-state :state) 'FAILURE)
           new-state
           (funcall (0+ parser) new-state)))))
+
+
+(defun until-consumed (parser)
+  (with-state state
+    (let ((new-state (funcall parser state)))
+      (if (equalp (f:@ new-state :state) 'FAILURE)
+          (if (f:convert 'list (f:@ new-state :remaining))
+              new-state
+              state)
+          (funcall (until-consumed parser) new-state)))))
 
 
 (defun letter ()
@@ -193,6 +207,7 @@
                     (number)))
              state)))
 
+
 (defun value ()
   "A value is a variable, a number, etc"
   (with-state-and-label state "value"
@@ -234,9 +249,32 @@
 
 
 (defun program ()
-  "A program is but a list of expressions
+  "A program is a list of expressions :)
    also everything should be a lisp."
   (with-state-and-label state "program"
-    (funcall (1+ (block (many (f:seq (expression)
-                                     (0+ (ws))))))
+    (funcall (many (f:seq
+                    (0+ (ws))
+                    (until-consumed (block (many (f:seq (expression)
+                                                        (0+ (ws))))))))
              state)))
+
+
+(defun parse (s)
+  (funcall (program) (read-in s)))
+
+
+(defun build-expr (expression)
+  (f:map (:function (f:first expression))
+         (:args (f:image (lambda (arg)
+                           (if (typep (f:first arg) 'fset:seq)
+                               (build-expr arg) arg))
+                         (f:less-first expression)))))
+
+(defun build (parsed-program)
+  (if (equalp (f:@ parsed-program :state) 'FAILURE)
+      (format t "Parsing Error: ~s~%Line: ~s~%Position: ~s~%Full Traceback:~%~{ ~s~%~}"
+              (f:first (f:@ parsed-program :errors))
+              (f:@ parsed-program :line)
+              (f:@ parsed-program :position)
+              (f:convert 'list (f:@ parsed-program :labels)))
+      (f:image #'build-expr (f:@ parsed-program :result))))
