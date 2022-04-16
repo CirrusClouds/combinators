@@ -159,27 +159,33 @@
           (funcall (until-consumed parser) new-state)))))
 
 
+(defun except (chars)
+  (with-state state
+    (let ((acceptable-chars (f:filter (lambda (ch)
+                                        (not (member ch (seq-to-list chars))))
+                                      *all-chars*)))
+      (if (seq-to-list acceptable-chars)
+          (funcall (choice (f:image #'char acceptable-chars)) state)
+          (funcall (char #\a) state)))))
+
+
 (defun letter ()
   (with-state state
-    (funcall (choice (f:seq (char #\a) (char #\b) (char #\c) (char #\d) (char #\e)
-                            (char #\f) (char #\g) (char #\h) (char #\i) (char #\j)
-                            (char #\l) (char #\m) (char #\n) (char #\o) (char #\p)
-                            (char #\q) (char #\r) (char #\s) (char #\t) (char #\u)
-                            (char #\v) (char #\x) (char #\y) (char #\z)))
+    (funcall (choice (f:image #'char *alpha-chars*))
              state)))
 
 
 (defun digit ()
   (with-state state
-    (funcall (choice (f:seq (char #\0) (char #\1) (char #\2) (char #\3) (char #\4)
-                            (char #\5) (char #\6) (char #\7) (char #\8) (char #\9))) state)))
+    (funcall (choice (f:image #'char *digit-chars*)) state)))
 
 
 (defun ws ()
   (with-state state
     (funcall (null (choice (f:seq (char #\ )
-                              (char #\linefeed )
-                              (char #\tab )))) state)))
+                                  (char #\linefeed )
+                                  (char #\tab ))))
+             state)))
 
 
 (defun word ()
@@ -203,10 +209,27 @@
              state)))
 
 
+(defun ratio ()
+  (with-state state
+    (funcall (many (f:seq
+                    (number)
+                    (char #\/)
+                    (number)))
+             state)))
+
+
+(defun str ()
+  (with-state state
+    (funcall (many (f:seq (char #\" )
+                          (0+ (except (f:seq #\" )))
+                          (char #\" )))
+             state)))
+
+
 (defun value ()
   "A value is a variable, a number, etc"
   (with-state-and-label state "value"
-    (funcall (choice (f:seq (float) (word) (number)))
+    (funcall (choice (f:seq (str) (ratio) (float) (word) (number)))
              state)))
 
 
@@ -278,18 +301,23 @@
 (defun build-arg (arg)
   (let ((arg-as-set (f:convert 'f:set arg)))
     (cond
+      ((seq-to-list (f:intersection (f:set #\")
+                                    arg-as-set))
+       (f:map (:type 'STRING)
+              (:value (seq-to-string (f:less-last (f:less-first arg))))))
+      ((seq-to-list (f:intersection (f:set #\/)
+                                    arg-as-set))
+       (f:map (:type 'RATIO)
+              (:value (seq-to-string arg))))
       ((seq-to-list (f:intersection (f:set #\.)
                                     arg-as-set))
        (f:map (:type 'FLOAT)
               (:value (seq-to-string arg))))
-      ((seq-to-list (f:intersection (f:set #\0 #\1 #\2 #\3 #\4 #\5 #\6
-                                           #\7 #\8 #\9)
+      ((seq-to-list (f:intersection (f:convert 'f:set *digit-chars*)
                                     arg-as-set))
        (f:map (:type 'INT)
               (:value (seq-to-string arg))))
-      ((seq-to-list (f:intersection (f:set #\a #\b #\c #\d #\e #\f #\g #\h #\i
-                                           #\j #\k #\l #\m #\n #\o #\p #\q #\r
-                                           #\s #\t #\u #\v #\w #\x #\y #\z)
+      ((seq-to-list (f:intersection (f:convert 'f:set *alpha-chars*)
                                     arg-as-set))
        (f:map (:type 'VAR)
               (:value (seq-to-string arg))))
