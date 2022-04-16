@@ -232,7 +232,7 @@
   (with-state state
     (funcall (many (f:seq
                     (null (char #\( ))
-                    (block (function))
+                    (block (? (function)))
                     (0+ (ws))
                     (0+ (block (expression)))
                     (null (char #\) ))
