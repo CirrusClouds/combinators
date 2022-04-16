@@ -2,263 +2,155 @@
 
 (in-package #:cl-combinator)
 
-;;;  Types and structs
+(defun make-state (remaining &optional (labels (f:empty-seq)))
+  (fset:map
+   (:state 'SUCCESS)
+   (:errors (f:empty-seq))
+   (:result (f:empty-seq))
+   (:remaining remaining)
+   (:position 0)
+   (:line 0)
+   (:labels labels)))
 
-(defun state-p (x)
-  (or (equal x 'Success)
-      (equal x 'Failure)))
+(defun read-in (str)
+  (make-state (f:convert 'f:seq (coerce str 'list))))
 
-(deftype state ()
-  `(and symbol
-    (satisfies state-p)))
+(defmacro with-state (binding &rest body)
+  "Curry + check for errors on your state automatically"
+  `(lambda (,binding)
+     (if (equalp (f:@ ,binding :state) 'FAILURE)
+         ,binding
+         ,@body)))
 
-(defstruct result
-  (state 'Failure :type state)
-  (result '() :type list)
-  (remaining '() :type list))
+(defun add-label (state label)
+  (f:map-union state (f:map (:labels (f:with-last (f:@ state :labels) label)))))
 
-(defun read-in ()
-  (make-result :remaining (coerce (read-line) 'list)))
-
-
-;;; Parse utils
-
-(defun pchar (char)
-  "Parse a single character"
-  (let ((char (coerce char 'character)))
-    (lambda (input)
-      (if (equal char (car (result-remaining input))) 
-          (make-result :state 'Success
-                       :result (append (result-result input) (list char))
-                       :remaining (cdr (result-remaining input)))
-          (make-result :state 'Failure :result (result-result input) :remaining (result-remaining input))
-          ))))
-
-(defun listparse (parsers)
-  "Parse multiple in a row and concatenate"
-  (lambda (input)
-    (cond ((null parsers)
-           input)
-          (t
-           (let ((output (funcall (car parsers) input)))
-             (if (equal (result-state output) 'Success)
-                 (funcall (listparse (cdr parsers)) output)
-                 output))))))
-
-(defun parsechoice (parsers)
-  "Parse one of"
-  (lambda (input)
-    (cond ((null parsers)
-           input)
-          (t
-           (let ((output (funcall (car parsers) input)))
-             (if (equal (result-state output) 'Success)
-                 output
-                 (funcall (parsechoice (cdr parsers)) output)))))))
-
-(defun manyparse (parser &optional (count 0))
-  "Parse the same repeatedly as many times as possible"
-  (lambda (input)
-    (let ((output (funcall parser input)))
-      (if (equal (result-state output) 'Success)
-          (funcall (manyparse parser) output)
-          (if (= count 0)
-              input
-              (make-result :state 'Success
-                           :result (result-result output)
-                           :remaining (result-remaining output)))))))
+(defmacro with-state-and-label (binding label &rest body)
+  "Curry + check for errors on your state automatically + add parser label"
+  `(lambda (,binding)
+     (if (equalp (f:@ ,binding :state) 'FAILURE)
+         ,binding
+         (let ((,binding (add-label ,binding ,label)))
+           ,@body))))
 
 
-(defun seqparse (parsers)
-  (lambda (input)
-    (let* ((clean-input (make-result :state 'Failure
-                                     :result nil
-                                     :remaining (result-remaining input)))
-           (output (funcall (listparse parsers) clean-input)))
-      (if (equal (result-state output) 'Success)
-          (make-result :state 'Success
-                       :result (append (result-result input) (list (result-result output)))
-                       :remaining (result-remaining output))
-          input))))
+(defun char (ch)
+  (with-state state
+    (if (f:first (f:@ state :remaining))
+        (condp char= (f:first (f:@ state :remaining))
+          (ch
+           (if (char= ch #\linefeed)
+               (f:map-union state (f:map
+                                   (:state 'SUCCESS)
+                                   (:remaining (f:less-first (f:@ state :remaining)))
+                                   (:position 0)
+                                   (:line (+ 1 (f:@ state :line)))
+                                   (:result (f:with-last (f:@ state :result) ch))))
+               (f:map-union state (f:map
+                                   (:state 'SUCCESS)
+                                   (:remaining (f:less-first (f:@ state :remaining)))
+                                   (:position (+ 1 (f:@ state :position)))
+                                   (:result (f:with-last (f:@ state :result) ch))))
+               ))
+          (f:map-union state (f:map
+                              (:state 'FAILURE)
+                              (:position (+ 1 (f:@ state :position)))
+                              (:errors (f:with-last (f:@ state :errors) (format nil "Expected character ~c, instead found ~c~%position: ~s" ch (f:first (f:@ state :remaining))
+                                                                                (f:@ state :position)))))))
+        (f:map-union state (f:map
+                            (:state 'FAILURE)
+                            (:position (+ 1 (f:@ state :position)))
+                            (:errors (f:with-last (f:@ state :errors) (format nil "End of input"))))))))
 
 
-(defun any-of-parse (str)
-  (lambda (input)
-    (funcall (parsechoice (mapcar #'pchar (coerce str 'list))) input)))
+(defun many (parsers)
+  (with-state state
+    (f:reduce (lambda (acc parser)
+                (funcall parser acc))
+              parsers
+              :initial-value state)))
 
 
-(defun 0-or-more-parse (parser)
-  (lambda (input)
-    (let ((output (funcall parser input)))
-      (if (equal (result-state output) 'Failure)
-          (make-result :state 'Success :result (result-result input) :remaining (result-remaining input))
-          (funcall (manyparse parser) input)))))
+(defun choice (parsers)
+  (with-state state
+    (let ((new-state (funcall (f:first parsers) state)))
+      (if (equalp (f:@ new-state :state) 'FAILURE)
+          (if (f:less-first parsers)
+              (funcall (choice (f:less-first parsers)) state)
+              new-state)
+          new-state))))
 
 
-(defun surrounded-by-parse (a b c)
-  (lambda (input)
-    (let ((aresult (funcall a input)))
-      (if (equal (result-state aresult) 'Success)
-          (let ((bresult (funcall b aresult)))
-            (if (equal (result-state bresult) 'Success)
-                (let ((cresult (funcall c bresult)))
-                  (if (equal (result-state cresult) 'Success)
-                      (progn
-                        (make-result :state 'Success
-                                     :result (result-result bresult)
-                                     :remaining (result-remaining cresult)))
-                      cresult))
-                bresult))
-          aresult))))
-
-(defun parse-no-result (parser)
-  (lambda (input)
-    (let ((output (funcall parser input)))
-      (make-result :state (result-state output)
-                   :result (result-result input)
-                   :remaining (result-remaining output)))))
-
-(defun surrounded-by-parse (a b c)
-  (lambda (input)
-    (let ((aresult (funcall (parse-no-result a) input)))
-      (if (equal (result-state aresult) 'Success)
-          (let ((bresult (funcall b aresult)))
-            (if (equal (result-state bresult) 'Success)
-                (let ((cresult (funcall (parse-no-result c) bresult)))
-                  (if (equal (result-state cresult) 'Success)
-                      (make-result :state 'Success
-                                   :result (result-result bresult)
-                                   :remaining (result-remaining cresult))
-                      cresult))
-                bresult))
-          aresult))))
+(defun block (parser)
+  (with-state state
+    (let ((n-block (funcall parser (make-state (f:@ state :remaining) (f:@ state :labels)))))
+      (f:map-union state (f:map
+                          (:state (f:@ n-block :state))
+                          (:labels (f:@ n-block :labels))
+                          (:position (+ (f:@ state :position)
+                                        (f:@ n-block :position)))
+                          (:result (f:with-last (f:@ state :result) (f:@ n-block :result)))
+                          (:remaining (f:@ n-block :remaining))
+                          (:errors (f:@ n-block :errors)))))))
 
 
-;;; Atomic Parsers
-
-(setf *char-parser* (any-of-parse "abcdefghijklmnopqrstuvwxyz"))
-
-(setf *digit-parser* (any-of-parse "1234567890"))
-
-(setf *op-parser* (any-of-parse "+-/*="))
-
-(defun number-parse ()
-  (lambda (input)
-    (funcall (seqparse (list (manyparse *digit-parser*))) input)))
-
-(defun interpret-number ()
-  (lambda (input)
-    (let ((output (funcall (number-parse) input)))
-      (if (equal (result-state output) 'Success)
-          (make-result :state 'Success
-                       :result (append (result-result input) (list (parse-integer (coerce (first (last (result-result output))) 'string))))
-                       :remaining (result-remaining output))
-          input))))
-
-(defun map-to-op (str)
-  (cond ((string= str "+") '+)
-        ((string=  str "-") '-)
-        ((string= str "*") '*)
-        ((string= str "/") '/)
-        ((string= str "=") '=)
-        (t
-         (error "~A doesn't match any operator" str))))
+(defun null (parser)
+  (with-state state
+    (let ((new-state (funcall parser (make-state (f:@ state :remaining) (f:@ state :labels)))))
+      (if (f:convert 'list (f:@ new-state :errors))
+          new-state
+          (f:map-union state (f:map
+                              (:state (f:@ new-state :state))
+                              (:position (+ (f:@ state :position)
+                                            (f:@ new-state :position)))
+                              (:result (f:@ state :result))
+                              (:remaining (f:@ new-state :remaining))
+                              (:errors (f:@ new-state :errors))))))))
 
 
-(defun op-parse ()
-  (lambda (input)
-    (let ((output (funcall (seqparse (list *op-parser*)) input)))
-      (if (equal (result-state output) 'Success)
-          (make-result :state 'Success
-                       :result (append (result-result input) (list (map-to-op (coerce (first (last (result-result output))) 'string))))
-                       :remaining (result-remaining output))
-          input))))
-
-(defun sym-parse ()
-  (lambda (input)
-    (funcall (manyparse (parsechoice (list *digit-parser* *char-parser*))) input)))
-
-(defun interpret-sym ()
-  (lambda (input)
-    (let ((output (funcall (seqparse (list (sym-parse))) input)))
-      (if (equal (result-state output) 'Success)
-          (make-result :state 'Success
-                       :result (append (result-result input) (list (read-from-string (coerce (first (last (result-result output))) 'string))))
-                       :remaining (result-remaining output))
-          input))))
-
-;; (defun empty-list-parse ()
-;;   (lambda (input)
-;;     (let ((output (funcall (seqparse (list (pchar "(")
-;;                                            (pchar ")"))) input)))
-;;       (if (equal (result-state output) 'Success)
-;;           (make-result :state 'Success
-;;                        :result (append (result-result input) (list (read-from-string (coerce (first (last (result-result output))) s 'string))))
-;;                        :remaining (result-remaining output))
-;;           input))))
-
-(defun null-parse ()
-  (lambda (input)
-    (make-result :state (result-state input)
-                 :result (result-result input)
-                 :remaining (result-remaining input))))
+(defun seq (parsers)
+  (with-state state
+    (funcall (many (f:image #'block parsers)) state)))
 
 
-;;; S-Expressions
-
-(defun sexpr-parse ()
-  (lambda (input)
-    (funcall
-     (surrounded-by-parse (pchar "(")
-                          (seqparse (list
-                                     (parsechoice (list (interpret-sym) (op-parse)))
-                                     (manyparse (listparse (list
-                                                            (parse-no-result (pchar " "))
-                                                            (parsechoice (list
-                                                                          (sexpr-parse)
-                                                                          (empty-list-parse)
-                                                                          (interpret-sym)
-                                                                          (interpret-number))))))))
-                          (pchar ")")) input)))
+(defun ? (parser)
+  (with-state state
+    (let ((new-state (funcall parser state)))
+      (if (equalp (f:@ new-state :state) 'FAILURE)
+          state
+          new-state))))
 
 
-(defun lispy-parse ()
-  (lambda (input)
-    (let ((output
-            (funcall (sexpr-parse) input)))
-      (make-result :state (result-state output)
-                   :result (car (result-result output))
-                   :remaining (result-remaining output)))))
+(defun 0+ (parser)
+  (with-state-and-label state "0+"
+    (let ((new-state (funcall parser state)))
+      (if (equalp (f:@ new-state :state) 'FAILURE)
+          state
+          (funcall (zero-or-more parser) new-state)))))
 
 
-;;; Deep interpreter water
+(defun 1+ (parser)
+  (with-state-and-label state "1+"
+    (let ((new-state (funcall parser state)))
+      (if (equalp (f:@ new-state :state) 'FAILURE)
+          new-state
+          (funcall (zero-or-more parser) new-state)))))
 
-(defun eval-op (op)
-  (cond
-    ((macro-function op)
-     (error "Macro ~A not yet implemented in MINILISP - sorry!" op))
-    (t
-     op)))
 
-(defun traverse-AST (tree)
-  (cond ((typep tree 'integer)
-         tree)
-        ((typep tree 'symbol)
-         tree)
-        ((listp tree)
-         (let ((op (first tree)))
-           (apply (eval-op op) (mapcar #'traverse-AST (cdr tree))))))) ;; For now we'll simply apply.
+(defun letter ()
+  (with-state-and-label state "letter"
+    (funcall (choice (f:seq (char #\a) (char #\b) (char #\c) (char #\d) (char #\e)
+                           (char #\f) (char #\g) (char #\h) (char #\i) (char #\j)
+                           (char #\l) (char #\m) (char #\n) (char #\o) (char #\p)
+                           (char #\q) (char #\r) (char #\s) (char #\t) (char #\u)
+                           (char #\v) (char #\x) (char #\y) (char #\z))) state)))
 
-;;; The REPL!
 
-(defun interpret-minilisp ()
-  (terpri)
-  (format t "MINILISP v0.0.1 || Press ??? to exit")
-  (terpri)
-  (terpri)
-  (terpri)
-  (loop :while t
-        :do
-           (format t "MINILISP> ")
-           (format t "~A" (traverse-AST (result-result (funcall (lispy-parse) (read-in)))))
-           (terpri)))
+(defun digit ()
+  (with-state-and-label state "digit"
+    (funcall (choice (f:seq (char #\0) (char #\1) (char #\2) (char #\3) (char #\4)
+                           (char #\5) (char #\6) (char #\7) (char #\8) (char #\9))) state)))
+
+(defun ws ()
+  (with-state state
+    (funcall (null (char #\ )) state)))

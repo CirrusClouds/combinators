@@ -6,6 +6,7 @@
   :license  "Specify license here"
   :version "0.0.1"
   :serial t
-  :depends-on (#:alexandria)
+  :depends-on (#:fset)
   :components ((:file "package")
+               (:file "utils")
                (:file "cl-combinator")))
