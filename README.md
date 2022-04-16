@@ -1,4 +1,4 @@
 # cl-combinator
 ### Just another p-combinator library
 
-running a program: (funcall (program) (read-in (read-file filename)) from your repl.
+running a program: (build (parse (read-file filename)))
