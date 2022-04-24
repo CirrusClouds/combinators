@@ -26,12 +26,37 @@
   (f:convert 'list s))
 
 
-(setq *alpha-chars* (f:seq #\a #\b #\c #\d #\e #\f #\g #\h #\i #\j #\k #\l #\m #\n #\o
-                           #\p #\q #\r #\s #\t #\u #\v #\w #\x #\y #\z))
+(defvar *alpha-chars* (f:seq #\a #\b #\c #\d #\e #\f #\g #\h #\i #\j #\k #\l #\m #\n #\o
+                           #\p #\q #\r #\s #\t #\u #\v #\w #\x #\y #\z #\A #\B #\C #\D
+                           #\E #\F #\G #\H #\I #\J #\K #\L #\M #\N #\O #\P #\Q #\R #\S
+                           #\T #\U #\V #\W #\X #\Y #\Z))
 
-(setq *digit-chars* (f:seq #\0 #\1 #\2 #\3 #\4 #\5 #\6 #\7 #\8 #\9))
+(defvar *digit-chars* (f:seq #\0 #\1 #\2 #\3 #\4 #\5 #\6 #\7 #\8 #\9))
 
-(setq *special-chars* (f:seq #\- #\* #\+ #\/ #\" #\; #\: #\' #\_ #\< #\? #\\ #\( #\)
-                             #\! #\£ #\$ #\% #\~ #\# #\  #\linefeed #\tab #\& #\^ ))
+(defvar *special-chars* (f:seq #\- #\* #\+ #\/ #\" #\; #\: #\' #\_ #\< #\? #\\ #\( #\)
+                             #\! #\£ #\$ #\% #\~ #\# #\  #\linefeed #\tab #\& #\^ #\.))
 
-(setq *all-chars* (f:concat *alpha-chars* *digit-chars* *special-chars*))
+(defvar *all-chars* (f:concat *alpha-chars* *digit-chars* *special-chars*))
+
+
+(defun i-reduce (f acc coll &optional (i 0))
+  (if coll
+      (i-reduce f (funcall f i acc coll) (rest coll) (+ i 1))
+      acc))
+
+(defun i-filter (f coll &optional (i 0))
+  (if coll
+      (if (funcall f i (first coll))
+          (cons (first coll) (i-filter f (rest coll) (+ i 1))))
+      nil))
+
+(defmacro ->> (&rest r)
+  "Tail-led pipelining/threading"
+  (reduce (lambda (o i)
+            `(,@i ,o)) r))
+
+(defmacro -> (&rest r)
+  "Elixir-style front-running pipelining/threading"
+  (reduce (lambda (o i)
+            `(,(car i) ,o ,@(cdr i))) r))
+

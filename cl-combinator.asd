@@ -9,4 +9,5 @@
   :depends-on (#:fset)
   :components ((:file "package")
                (:file "utils")
-               (:file "cl-combinator")))
+               (:file "cl-combinator")
+               (:file "parser")))

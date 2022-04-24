@@ -1,0 +1,7 @@
+(ns Parser)
+
+(with (dot Ada Text_IO) (dot Ada Strings))
+
+(defun name integer (arglist x integer y integer) (+ x y))
+
+(main (name 1 2))
